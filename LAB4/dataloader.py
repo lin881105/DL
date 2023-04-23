@@ -4,6 +4,8 @@ import numpy as np
 import os
 from PIL import Image
 from torchvision import transforms
+from PIL import ImageFile
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
 def getData(mode):
@@ -77,3 +79,23 @@ class RetinopathyLoader(data.Dataset):
         img = data_transform(img).to(self.device)
 
         return img, label
+
+
+if __name__ == "__main__":
+    image_name , label = getData('train')
+
+    print(image_name[0])
+
+    
+
+    img = Image.open(os.path.join(f'new_train',image_name[0]+'.jpeg'))
+
+    data_transform = transforms.Compose([
+    transforms.CenterCrop(min(img.size)),
+    transforms.Resize(512),
+    transforms.ToTensor(),
+    transforms.Normalize(
+        mean=[0.485,0.456,0.406],
+        std=[0.229,0.224,0.225]
+    )
+])

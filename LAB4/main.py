@@ -1,15 +1,16 @@
 import torch
-import numpy as np
 import torch.nn as nn
 import argparse
-from torch import Tensor
 import torchvision.models as models
 from dataloader import RetinopathyLoader
 from torch.utils.data import DataLoader
 import datetime
 import torch.optim as optim
 import torch.nn.functional as F
+from sklearn.metrics import confusion_matrix
 import matplotlib.pyplot as plt
+import pandas as pd
+import seaborn as sns
 import scipy.io as sio
 from tqdm import tqdm
 from multiprocessing import set_start_method
@@ -127,6 +128,7 @@ def train(model, num_epoch):
         print(f'Testing Loss: {test_loss/test_total}')
         print(f'Testing Accuracy: {test_acc}')
         shceduler.step()
+    print(f'Best Testing Accuracy: {best_acc}')
     
     if args.pretrain:
         file_name = 'pretrain'
@@ -147,14 +149,26 @@ def train(model, num_epoch):
         
             
             
-def test(model):
+def test(model_name):
+    if model_name[:8] == 'resnet18':
+        model = models.resnet18()
+    else:
+        model = models.resnet50()
+    
+    _in = model.fc.in_features
+    model.fc = nn.Linear(_in, 5)
+    model = model.to(device)
+    model.cuda()
+    model.load_state_dict(torch.load(f'checkpt/{model_name}.pt'))
 
     test_loss = 0.0
     correct = 0
     total = 0
+    y_true = []
+    y_pred = []
     with torch.no_grad():
         model.eval()
-        for i, data in enumerate(test_dataloader):
+        for i, data in enumerate(tqdm(test_dataloader)):
             input, label = data
             input = input.to(device)
             label = label.to(device)
@@ -168,8 +182,23 @@ def test(model):
             correct += torch.sum(pred==label)
 
             total += label.size(0)
-
-    print(f'Testing Loss: {test_loss}')
+            
+            y_true.extend(label.cpu().numpy())
+            y_pred.extend(pred.cpu().numpy())
+        
+        cf_matrix = confusion_matrix(y_true,y_pred)
+        
+        class_names = ['0','1','2','3','4']
+        
+        df_cm = pd.DataFrame(cf_matrix, class_names, class_names)
+        plt.figure(figsize = (9,6))
+        sns.heatmap(df_cm, annot=True, fmt="d", cmap='BuGn')
+        plt.xlabel("prediction")
+        plt.ylabel("label (ground truth)")
+        plt.savefig(f'{model_name}_confusion_matrix.png')
+                
+    print(f'{model_name}')
+    print(f'Testing Loss: {test_loss/total}')
     print(f'Testing accuracy: {correct/total}')
 
 
@@ -177,36 +206,25 @@ def test(model):
 
 
 if __name__ == "__main__":
-    if args.model == 'resnet18':
-        if args.pretrain:
-            model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
-        else:
-            model = models.resnet18()
-    
-    if args.model == 'resnet50':
-        if args.pretrain:
-            model = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
-        else:
-            model = models.resnet50()
-
-
-    _in = model.fc.in_features
-    model.fc = nn.Linear(_in, 5)
-
-    model = model.to(device)
-    model.cuda()
-
     if args.mode == 'train':
+        if args.model == 'resnet18':
+            if args.pretrain:
+                model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
+            else:
+                model = models.resnet18()
+        
+        if args.model == 'resnet50':
+            if args.pretrain:
+                model = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
+            else:
+                model = models.resnet50()
+        _in = model.fc.in_features
+        model.fc = nn.Linear(_in, 5)
+        model = model.to(device)
+        model.cuda()
         train(model, args.epoch)
     else:
-        model_pth = torch.load(args.model_pth)
-
-
-
-
-    
-    
-        
-    
-
-    
+        test('resnet18-pretrain')
+        test('resnet18-scratch')
+        test('resnet50-pretrain')
+        test('resnet50-scratch')

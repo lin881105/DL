@@ -10,9 +10,17 @@ import datetime
 import torch.optim as optim
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
+import scipy.io as sio
+from tqdm import tqdm
+from multiprocessing import set_start_method
+try:
+    set_start_method('spawn')
+except RuntimeError:
+    pass
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else 'cpu')
+
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--model', help='',choices=["resnet18","resnet50"])
@@ -29,14 +37,14 @@ args = parser.parse_args()
 
 train_data = RetinopathyLoader(f'new_train', 'train',device)
 test_data = RetinopathyLoader(f'new_test', 'test',device)
-train_dataloader = DataLoader(train_data, batch_size=4, shuffle=True)
-test_dataloader = DataLoader(test_data, batch_size=4, shuffle=True)
+train_dataloader = DataLoader(train_data, batch_size=args.batchSize, shuffle=True,num_workers=16)
+test_dataloader = DataLoader(test_data, batch_size=args.batchSize, num_workers=16)
 
 
 
 
 def train(model, num_epoch):
-
+    
     best_acc = 0.0
     best_weight = model.state_dict()
     train_acc_list = []
@@ -57,7 +65,7 @@ def train(model, num_epoch):
         total = 0
         
 
-        for i, data in enumerate(train_dataloader):
+        for i, data in enumerate(tqdm(train_dataloader)):
             input, label = data
             input = input.to(device)
             label = label.to(device)
@@ -81,8 +89,8 @@ def train(model, num_epoch):
 
         train_acc = total_correct/total
 
-        train_acc_list.append(train_acc)
-        train_loss_list.append(running_loss)
+        train_acc_list.append(train_acc.cpu())
+        train_loss_list.append(running_loss/total)
 
         test_loss = 0.0
         test_correct = 0
@@ -90,16 +98,14 @@ def train(model, num_epoch):
 
         with torch.no_grad():
             model.eval()
-            for i, data in enumerate(test_dataloader):
+            for i, data in enumerate(tqdm(test_dataloader)):
                 input, label = data
                 input = input.to(device)
                 label = label.to(device)
 
-                print(label.min())
-
                 output = model(input)
 
-                test_loss += F.cross_entropy(input, label).item()
+                test_loss += criterion(output, label).item()
 
                 _,test_pred = torch.max(output.data, 1)
 
@@ -108,17 +114,17 @@ def train(model, num_epoch):
                 test_total += label.size(0)
 
         test_acc =test_correct/test_total
-        test_acc_list.append(test_acc)
+        test_acc_list.append(test_acc.cpu())
 
-        test_loss_list.append(test_loss)
+        test_loss_list.append(test_loss/test_total)
 
         if test_acc > best_acc:
             best_weight = model.state_dict()
             best_acc = test_acc
 
-        print(f'Train Loss: {running_loss}')
+        print(f'Train Loss: {running_loss/total}')
         print(f'Training Accuracy: {train_acc}')
-        print(f'Testing Loss: {test_loss}')
+        print(f'Testing Loss: {test_loss/test_total}')
         print(f'Testing Accuracy: {test_acc}')
         shceduler.step()
     
@@ -128,6 +134,16 @@ def train(model, num_epoch):
         file_name = 'scratch'
 
     torch.save(best_weight,f'checkpt/{datetime.datetime.now().strftime("%Y%m%d-%H%M%S")}-{args.model}-{file_name}.pt')
+    
+    log = {
+        "train_accuracy": train_acc_list, 
+        "test_accuracy": test_acc_list,
+        "train_loss": train_loss_list,
+        "test_loss": test_loss_list,
+    }
+
+    sio.savemat(f'log/{datetime.datetime.now().strftime("%Y%m%d-%H%M%S")}-{args.model}-{file_name}.mat',log)
+
         
             
             
@@ -161,7 +177,6 @@ def test(model):
 
 
 if __name__ == "__main__":
-
     if args.model == 'resnet18':
         if args.pretrain:
             model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
@@ -173,6 +188,7 @@ if __name__ == "__main__":
             model = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
         else:
             model = models.resnet50()
+
 
     _in = model.fc.in_features
     model.fc = nn.Linear(_in, 5)

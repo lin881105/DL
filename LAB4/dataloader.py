@@ -6,6 +6,11 @@ from PIL import Image
 from torchvision import transforms
 from PIL import ImageFile
 ImageFile.LOAD_TRUNCATED_IMAGES = True
+from multiprocessing import set_start_method
+try:
+    set_start_method('spawn')
+except RuntimeError:
+    pass
 
 
 def getData(mode):
@@ -34,7 +39,7 @@ class RetinopathyLoader(data.Dataset):
         self.mode = mode
         self.device = device
 
-        print("> Found %d images..." % (len(self.img_name)))
+        # print("> Found %d images..." % (len(self.img_name)))
 
     def __len__(self):
         """'return the size of dataset"""

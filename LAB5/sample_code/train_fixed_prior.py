@@ -67,7 +67,35 @@ def train(x, cond, modules, optimizer, kl_anneal, args):
     kld = 0
     use_teacher_forcing = True if random.random() < args.tfr else False
     for i in range(1, args.n_past + args.n_future):
-        raise NotImplementedError
+
+        # encode current frame
+        h = modules["encoder"](x[i-1])
+
+        if i < args.n_past:
+            h_target = modules['encoder'](x[i])
+            z_t,_,_ = modules['posterior'](h_target)
+        else:
+            if use_teacher_forcing:
+                h_pred = modules['frame_predictor'](torch.cat([cond,h,z_t],1))
+                h_target = modules['encoder'](x[i])
+                z_t,_,_ = modules['posterior'](h_target)
+            else:
+                h_pred = modules['frame_predictor'](torch.cat([cond,h,z_pred],1))
+        
+        # compute decoder output
+        x_pred = modules['decoder'](h_pred)
+
+        # reconstruction loss
+        mse += F.mse_loss(x_pred,x[i])
+
+        # KL loss
+        z_prior,_,_ = modules['posterior'](h_pred.detach())
+        z_pred,mu,logvar = modules['posterior'](h_pred)
+        kld += kl_criterion(mu,logvar,z_prior)
+            
+
+
+        # raise NotImplementedError
 
     beta = kl_anneal.get_beta()
     loss = mse + kld * beta
@@ -80,13 +108,29 @@ def train(x, cond, modules, optimizer, kl_anneal, args):
 class kl_annealing():
     def __init__(self, args):
         super().__init__()
-        raise NotImplementedError
+        # raise NotImplementedError
+        self.step = 0
+        self.ratio = args.kl_anneal_ratio
+        self.cycle = args.kl_anneal_cycle
+        self.cyclical = args.kl_anneal_cyclical
     
     def update(self):
-        raise NotImplementedError
+        # raise NotImplementedError
+        if self.cyclical:
+            # if using cyclical mode, use a cosine schedule
+            self.step = (self.step + 1) % (self.cycle * 2)
+            if self.step < self.cycle:
+                return self.ratio * (1 - np.cos(np.pi * self.step / self.cycle)) / 2
+            else:
+                return self.ratio
+        else:
+            # if not using cyclical mode, use a linear schedule
+            self.step += 1
+            return min(1, self.ratio * self.step / self.cycle)      
     
     def get_beta(self):
-        raise NotImplementedError
+        # raise NotImplementedError
+        return self.update()
 
 
 def main():

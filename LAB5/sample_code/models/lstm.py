@@ -58,7 +58,10 @@ class gaussian_lstm(nn.Module):
         return hidden
 
     def reparameterize(self, mu, logvar):
-        raise NotImplementedError
+        # raise NotImplementedError
+        std = torch.exp(0.5*logvar)
+        eps = torch.randn_like(std).to(self.device)
+        return mu+eps+std
 
     def forward(self, input):
         embedded = self.embed(input)

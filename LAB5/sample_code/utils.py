@@ -114,3 +114,37 @@ def init_weights(m):
     elif classname.find('BatchNorm') != -1:
         m.weight.data.normal_(1.0, 0.02)
         m.bias.data.fill_(0)
+
+def pred(seq, cond, modules, args, device):
+    modules['frame_predictor'].hidden = modules['frame_predictor'].init_hidden()
+    modules['posterior'].hidden = modules['posterior'].init_hidden()
+    seq = seq.to(device)
+    cond = cond.to(device)
+
+    pred_seq = []
+    for i in range(1, args.n_past + args.n_eval):
+        h = modules['encoder'](seq[i-1])
+        if i < args.n_past:
+            h_target = modules['encoder'](seq[i])
+            z_t, _, _ = modules['posterior'](h_target)
+        else:
+            h_pred = modules['frame_predictor'](torch.cat([cond,h,z_t],1))
+            z_pred, _, _ = modules['posterior'](h_pred)
+            x_pred = modules['decoder'](h_pred)
+            pred_seq.append(x_pred)
+    return torch.stack(pred_seq, dim=0)
+
+
+def plot_pred(seq, cond, modules, epoch, args):
+    pred_seq = pred(seq, cond, modules, args, 'cpu')
+    seq = seq.detach().cpu().numpy().transpose(0, 2, 3, 1)
+    pred_seq = pred_seq.detach().cpu().numpy().transpose(0, 2, 3, 1)
+    
+    fig, axs = plt.subplots(2, args.n_eval, figsize=(args.n_eval * 2, 4))
+    for i in range(args.n_eval):
+        axs[0, i].imshow(seq[args.n_past + i])
+        axs[0, i].axis('off')
+        axs[1, i].imshow(pred_seq[args.n_past + i])
+        axs[1, i].axis('off')
+    plt.savefig('%s/gen/sample_%d.png' % (args.log_dir, epoch))
+    plt.close(fig)

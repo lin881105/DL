@@ -6,6 +6,7 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 from PIL import Image
 from multiprocessing import set_start_method
+import datetime
 try:
     set_start_method('spawn')
 except RuntimeError:
@@ -36,7 +37,6 @@ class bair_robot_pushing_dataset(Dataset):
         self.seed_is_set = False
         self.idx = 0
         self.cur_dir = self.dirs[0]
-        self.device = 'cuda:0'
                 
     def set_seed(self, seed):
         if not self.seed_is_set:
@@ -48,7 +48,7 @@ class bair_robot_pushing_dataset(Dataset):
         
     def get_seq(self):
         if self.ordered:
-            self.cur_dir = self.dirs[self.d]
+            self.cur_dir = self.dirs[self.idx]
             if self.idx == len(self.dirs) - 1:
                 self.idx = 0
             else:
@@ -61,7 +61,7 @@ class bair_robot_pushing_dataset(Dataset):
             fname = '{}/{}.png'.format(self.cur_dir, i)
             img = Image.open(fname)
             image_seq.append(self.transform(img))
-        image_seq = torch.stack(image_seq).to(self.device)
+        image_seq = torch.stack(image_seq)
 
         return image_seq
     
@@ -75,7 +75,7 @@ class bair_robot_pushing_dataset(Dataset):
                 action = [float(value) for value in row]
                 actions.append(torch.tensor(action))
             
-            actions = torch.stack(actions).to(self.device)
+            actions = torch.stack(actions)
             
         with open('{}/endeffector_positions.csv'.format(self.cur_dir), newline='') as csvfile:
             rows = csv.reader(csvfile)
@@ -85,9 +85,9 @@ class bair_robot_pushing_dataset(Dataset):
                     break
                 position = [float(value) for value in row]
                 positions.append(torch.tensor(position))
-            positions = torch.stack(positions).to(self.device)
+            positions = torch.stack(positions)
 
-        condition = torch.cat((actions, positions), axis=1).to(self.device)
+        condition = torch.cat((actions, positions), axis=1)
 
         return condition
 

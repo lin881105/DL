@@ -16,6 +16,7 @@ from dataset import bair_robot_pushing_dataset
 from models.lstm import gaussian_lstm, lstm
 from models.vgg_64 import vgg_decoder, vgg_encoder
 from utils import init_weights, kl_criterion, plot_pred, finn_eval_seq, pred
+import datetime
 
 torch.backends.cudnn.benchmark = True
 
@@ -40,14 +41,14 @@ def parse_args():
     parser.add_argument('--seed', default=1, type=int, help='manual seed')
     parser.add_argument('--n_past', type=int, default=2, help='number of frames to condition on')
     parser.add_argument('--n_future', type=int, default=10, help='number of frames to predict')
-    parser.add_argument('--n_eval', type=int, default=30, help='number of frames to predict at eval time')
+    parser.add_argument('--n_eval', type=int, default=12, help='number of frames to predict at eval time')
     parser.add_argument('--rnn_size', type=int, default=256, help='dimensionality of hidden layer')
     parser.add_argument('--posterior_rnn_layers', type=int, default=1, help='number of layers')
     parser.add_argument('--predictor_rnn_layers', type=int, default=2, help='number of layers')
     parser.add_argument('--z_dim', type=int, default=64, help='dimensionality of z_t')
     parser.add_argument('--g_dim', type=int, default=128, help='dimensionality of encoder output vector and decoder input vector')
     parser.add_argument('--beta', type=float, default=0.0001, help='weighting on KL to prior')
-    parser.add_argument('--num_workers', type=int, default=4, help='number of data loading threads')
+    parser.add_argument('--num_workers', type=int, default=16, help='number of data loading threads')
     parser.add_argument('--last_frame_skip', action='store_true', help='if true, skip connections go between frame t and frame t+t rather than last ground truth frame')
     parser.add_argument('--cuda', default=False, action='store_true')  
 
@@ -69,21 +70,26 @@ def train(x, cond, modules, optimizer, kl_anneal, args):
     for i in range(1, args.n_past + args.n_future):
 
         # encode current frame
-        h = modules["encoder"](x[i-1])
+        # print(x.shape)
+        # print(cond.shape)
+        h,skip = modules["encoder"](x[i-1])
 
         if i < args.n_past:
             h_target = modules['encoder'](x[i])
-            z_t,_,_ = modules['posterior'](h_target)
+            z_t,_,_ = modules['posterior'](h_target[0])
+
+            h_pred = modules['frame_predictor'](torch.cat([cond[i-1],h,z_t],1))
         else:
             if use_teacher_forcing:
-                h_pred = modules['frame_predictor'](torch.cat([cond,h,z_t],1))
+                h_pred = modules['frame_predictor'](torch.cat([cond[i-1],h,z_t],1))
                 h_target = modules['encoder'](x[i])
-                z_t,_,_ = modules['posterior'](h_target)
+                z_t,_,_ = modules['posterior'](h_target[0])
             else:
-                h_pred = modules['frame_predictor'](torch.cat([cond,h,z_pred],1))
+                h_pred = modules['frame_predictor'](torch.cat([cond[i-1],h,z_pred],1))
         
         # compute decoder output
-        x_pred = modules['decoder'](h_pred)
+        x_pred = modules['decoder']([h_pred,skip])
+        
 
         # reconstruction loss
         mse += F.mse_loss(x_pred,x[i])
@@ -91,7 +97,7 @@ def train(x, cond, modules, optimizer, kl_anneal, args):
         # KL loss
         z_prior,_,_ = modules['posterior'](h_pred.detach())
         z_pred,mu,logvar = modules['posterior'](h_pred)
-        kld += kl_criterion(mu,logvar,z_prior)
+        kld += kl_criterion(mu,logvar,args)
             
 
 
@@ -103,34 +109,49 @@ def train(x, cond, modules, optimizer, kl_anneal, args):
 
     optimizer.step()
 
-    return loss.detach().cpu().numpy() / (args.n_past + args.n_future), mse.detach().cpu().numpy() / (args.n_past + args.n_future), kld.detach().cpu().numpy() / (args.n_future + args.n_past)
+    return loss.detach().cpu().numpy() / (args.n_past + args.n_future), mse.detach().cpu().numpy() / (args.n_past + args.n_future), kld.detach().cpu().numpy() / (args.n_future + args.n_past),beta
 
 class kl_annealing():
     def __init__(self, args):
         super().__init__()
         # raise NotImplementedError
-        self.step = 0
+        self.iter = 0
+        self.v = 0
         self.ratio = args.kl_anneal_ratio
         self.cycle = args.kl_anneal_cycle
         self.cyclical = args.kl_anneal_cyclical
+        self.args = args
+        self.period = args.niter/args.kl_anneal_cycle
+        self.step = 1.0/(self.period*args.kl_anneal_ratio)
+        
+        
     
     def update(self):
         # raise NotImplementedError
         if self.cyclical:
             # if using cyclical mode, use a cosine schedule
-            self.step = (self.step + 1) % (self.cycle * 2)
-            if self.step < self.cycle:
-                return self.ratio * (1 - np.cos(np.pi * self.step / self.cycle)) / 2
+            # self.step = (self.step + 1) % (self.cycle * 2)
+            
+            if self.v <= 1:
+                # return self.ratio * (1 - np.cos(np.pi * self.step / self.cycle))/2,self.step
+                self.args.beta = (1 - np.cos(np.pi * self.v))/2
+                self.v += self.step
+                self.iter += 1
             else:
-                return self.ratio
+                self.args.beta = 1.0
+            if self.iter % int(self.period) == 0:
+                self.v = 0
+                self.args.beta = 0
+            
+
         else:
             # if not using cyclical mode, use a linear schedule
-            self.step += 1
-            return min(1, self.ratio * self.step / self.cycle)      
+            self.args.beta = min(1, self.iter/self.ratio * self.args.epoch)  
+            self.iter += 1
     
     def get_beta(self):
         # raise NotImplementedError
-        return self.update()
+        return self.args.beta
 
 
 def main():
@@ -187,7 +208,7 @@ def main():
         frame_predictor = saved_model['frame_predictor']
         posterior = saved_model['posterior']
     else:
-        frame_predictor = lstm(args.g_dim+args.z_dim, args.g_dim, args.rnn_size, args.predictor_rnn_layers, args.batch_size, device)
+        frame_predictor = lstm(args.g_dim+args.z_dim+7, args.g_dim, args.rnn_size, args.predictor_rnn_layers, args.batch_size, device)
         posterior = gaussian_lstm(args.g_dim, args.z_dim, args.rnn_size, args.posterior_rnn_layers, args.batch_size, device)
         frame_predictor.apply(init_weights)
         posterior.apply(init_weights)
@@ -268,18 +289,22 @@ def main():
                 train_iterator = iter(train_loader)
                 seq, cond = next(train_iterator)
             
-            loss, mse, kld = train(seq, cond, modules, optimizer, kl_anneal, args)
+            loss, mse, kld,beta = train(seq.transpose(0,1).to(device), cond.transpose(0,1).to(device), modules, optimizer, kl_anneal, args)
             epoch_loss += loss
             epoch_mse += mse
             epoch_kld += kld
         
         if epoch >= args.tfr_start_decay_epoch:
             ### Update teacher forcing ratio ###
-            raise NotImplementedError
+            # raise NotImplementedError
+            # print(args.tfr - args.tfr_decay_step)
+            args.tfr = max(args.tfr - args.tfr_decay_step, args.tfr_lower_bound)
+        
+        kl_anneal.update()
 
         progress.update(1)
         with open('./{}/train_record.txt'.format(args.log_dir), 'a') as train_record:
-            train_record.write(('[epoch: %02d] loss: %.5f | mse loss: %.5f | kld loss: %.5f\n' % (epoch, epoch_loss  / args.epoch_size, epoch_mse / args.epoch_size, epoch_kld / args.epoch_size)))
+            train_record.write(('[epoch: %02d] loss: %.5f | mse loss: %.5f | kld loss: %.5f | tfr: %.5f | beta: %.5f\n' % (epoch, epoch_loss  / args.epoch_size, epoch_mse / args.epoch_size, epoch_kld / args.epoch_size, args.tfr,args.beta)))
         
         frame_predictor.eval()
         encoder.eval()
@@ -295,8 +320,10 @@ def main():
                     validate_iterator = iter(validate_loader)
                     validate_seq, validate_cond = next(validate_iterator)
 
-                pred_seq = pred(validate_seq, validate_cond, modules, args, device)
-                _, _, psnr = finn_eval_seq(validate_seq[args.n_past:], pred_seq[args.n_past:])
+                pred_seq = pred(validate_seq.transpose(0,1), validate_cond.transpose(0,1), modules, args, device)
+                # print(pred_seq.shape)
+                # print(validate_seq.shape)
+                _, _, psnr = finn_eval_seq(validate_seq.transpose(0,1)[args.n_past:args.n_past+args.n_future], pred_seq[args.n_past:])
                 psnr_list.append(psnr)
                 
             ave_psnr = np.mean(np.concatenate(psnr))

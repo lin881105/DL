@@ -122,29 +122,103 @@ def pred(seq, cond, modules, args, device):
     cond = cond.to(device)
 
     pred_seq = []
-    for i in range(1, args.n_past + args.n_eval):
-        h = modules['encoder'](seq[i-1])
+    pred_seq.append(seq[0])
+    for i in range(1, args.n_eval):
+        # print(seq.shape)
+        # print(cond.shape)
+        h,skip = modules['encoder'](seq[i-1])
         if i < args.n_past:
             h_target = modules['encoder'](seq[i])
-            z_t, _, _ = modules['posterior'](h_target)
+            z_t, _, _ = modules['posterior'](h_target[0])
+            h_pred = modules['frame_predictor'](torch.cat([cond[i-1],h,z_t],1))
+            pred_seq.append(seq[i])
         else:
-            h_pred = modules['frame_predictor'](torch.cat([cond,h,z_t],1))
-            z_pred, _, _ = modules['posterior'](h_pred)
-            x_pred = modules['decoder'](h_pred)
+            z_t = torch.randn_like(z_t).to(device, dtype=torch.float32)
+            h_pred = modules['frame_predictor'](torch.cat([cond[i-1],h,z_t],1)).detach()
+            # z_pred, _, _ = modules['posterior'](h_pred)
+            x_pred = modules['decoder']([h_pred,skip]).detach()
             pred_seq.append(x_pred)
     return torch.stack(pred_seq, dim=0)
 
 
 def plot_pred(seq, cond, modules, epoch, args):
-    pred_seq = pred(seq, cond, modules, args, 'cpu')
-    seq = seq.detach().cpu().numpy().transpose(0, 2, 3, 1)
-    pred_seq = pred_seq.detach().cpu().numpy().transpose(0, 2, 3, 1)
+    pred_seq = pred(seq.transpose(0,1), cond.transpose(0,1), modules, args, 'cuda')
+    # print(seq.shape)
+    # print(pred_seq.shape)    
+    # seq = seq.detach().cpu().numpy().transpose(0, 2, 3, 1)
+    # pred_seq = pred_seq.detach().cpu().numpy().transpose(0, 2, 3, 1)
+    to_plot = []
+    nrow = args.batch_size
+    for i in range(nrow):
+        row = []
+        for t in range(args.n_past+args.n_future):
+            row.append(pred_seq[t][i]) 
+        to_plot.append(row)
+    # fig, axs = plt.subplots(2, args.n_eval, figsize=(args.n_eval * 2, 4))
+    # for i in range(args.n_eval):
+    #     axs[0, i].imshow(seq[args.n_past + i])
+    #     axs[0, i].axis('off')
+    #     axs[1, i].imshow(pred_seq[args.n_past + i])
+    #     axs[1, i].axis('off')
+    fname = ('%s/gen/sample_%d.png' % (args.log_dir, epoch))
+    # plt.close(fig)
+    save_tensors_image(fname,to_plot)
     
-    fig, axs = plt.subplots(2, args.n_eval, figsize=(args.n_eval * 2, 4))
-    for i in range(args.n_eval):
-        axs[0, i].imshow(seq[args.n_past + i])
-        axs[0, i].axis('off')
-        axs[1, i].imshow(pred_seq[args.n_past + i])
-        axs[1, i].axis('off')
-    plt.savefig('%s/gen/sample_%d.png' % (args.log_dir, epoch))
-    plt.close(fig)
+def save_tensors_image(filename, inputs, padding=1):
+    images = image_tensor(inputs, padding)
+    return save_image(images, filename)
+
+def image_tensor(inputs, padding=1):
+    # assert is_sequence(inputs)
+    assert len(inputs) > 0
+    # print(inputs)
+
+    # if this is a list of lists, unpack them all and grid them up
+    if is_sequence(inputs[0]) or (hasattr(inputs, "dim") and inputs.dim() > 4):
+        images = [image_tensor(x) for x in inputs]
+        if images[0].dim() == 3:
+            c_dim = images[0].size(0)
+            x_dim = images[0].size(1)
+            y_dim = images[0].size(2)
+        else:
+            c_dim = 1
+            x_dim = images[0].size(0)
+            y_dim = images[0].size(1)
+
+        result = torch.ones(c_dim,
+                            x_dim * len(images) + padding * (len(images)-1),
+                            y_dim)
+        for i, image in enumerate(images):
+            result[:, i * x_dim + i * padding :
+                   (i+1) * x_dim + i * padding, :].copy_(image)
+
+        return result
+
+    # if this is just a list, make a stacked image
+    else:
+        images = [x.data if isinstance(x, torch.autograd.Variable) else x
+                  for x in inputs]
+        # print(images)
+        if images[0].dim() == 3:
+            c_dim = images[0].size(0)
+            x_dim = images[0].size(1)
+            y_dim = images[0].size(2)
+        else:
+            c_dim = 1
+            x_dim = images[0].size(0)
+            y_dim = images[0].size(1)
+
+        result = torch.ones(c_dim,
+                            x_dim,
+                            y_dim * len(images) + padding * (len(images)-1))
+        for i, image in enumerate(images):
+            result[:, :, i * y_dim + i * padding :
+                   (i+1) * y_dim + i * padding].copy_(image)
+        return result
+    
+def is_sequence(arg):
+    return (not hasattr(arg, "strip") and
+            not type(arg) is np.ndarray and
+            not hasattr(arg, "dot") and
+            (hasattr(arg, "__getitem__") or
+            hasattr(arg, "__iter__")))

@@ -14,3 +14,4 @@ LAB4/new_train
 *.npz
 *.png
 *.csv
+*.pth

@@ -75,16 +75,18 @@ def train(x, cond, modules, optimizer, kl_anneal, args):
         h,skip = modules["encoder"](x[i-1])
 
         if i < args.n_past:
-            h_target = modules['encoder'](x[i])
-            z_t,_,_ = modules['posterior'](h_target[0])
+            h_target,_ = modules['encoder'](x[i])
+            z_t,mu,logvar = modules['posterior'](h_target)
 
             h_pred = modules['frame_predictor'](torch.cat([cond[i-1],h,z_t],1))
         else:
             if use_teacher_forcing:
+                h_target,_ = modules['encoder'](x[i])
+                z_t,mu,logvar = modules['posterior'](h_target)
                 h_pred = modules['frame_predictor'](torch.cat([cond[i-1],h,z_t],1))
-                h_target = modules['encoder'](x[i])
-                z_t,_,_ = modules['posterior'](h_target[0])
             else:
+                h_target,_ = modules["encoder"](x_pred)
+                z_t,mu,logvar = modules['posterior'](h_target)
                 h_pred = modules['frame_predictor'](torch.cat([cond[i-1],h,z_pred],1))
         
         # compute decoder output
@@ -95,8 +97,6 @@ def train(x, cond, modules, optimizer, kl_anneal, args):
         mse += F.mse_loss(x_pred,x[i])
 
         # KL loss
-        z_prior,_,_ = modules['posterior'](h_pred.detach())
-        z_pred,mu,logvar = modules['posterior'](h_pred)
         kld += kl_criterion(mu,logvar,args)
             
 

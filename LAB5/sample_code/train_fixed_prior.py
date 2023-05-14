@@ -87,7 +87,7 @@ def train(x, cond, modules, optimizer, kl_anneal, args):
             else:
                 h_target,_ = modules["encoder"](x_pred)
                 z_t,mu,logvar = modules['posterior'](h_target)
-                h_pred = modules['frame_predictor'](torch.cat([cond[i-1],h,z_pred],1))
+                h_pred = modules['frame_predictor'](torch.cat([cond[i-1],h,z_t],1))
         
         # compute decoder output
         x_pred = modules['decoder']([h_pred,skip])
@@ -139,9 +139,10 @@ class kl_annealing():
                 self.iter += 1
             else:
                 self.args.beta = 1.0
-            if self.iter % int(self.period) == 0:
+            if self.iter >= self.period:
                 self.v = 0
-                self.args.beta = 0
+                self.iter = 0 
+                self.args.beta = 0.0
             
 
         else:

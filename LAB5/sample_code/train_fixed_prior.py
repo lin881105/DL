@@ -146,7 +146,7 @@ class kl_annealing():
 
         else:
             # if not using cyclical mode, use a linear schedule
-            self.args.beta = min(1, self.iter/self.ratio * self.args.epoch)  
+            self.args.beta = min(1, self.iter/(self.ratio * self.args.niter))  
             self.iter += 1
     
     def get_beta(self):

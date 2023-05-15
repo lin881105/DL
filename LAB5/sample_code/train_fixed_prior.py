@@ -120,9 +120,11 @@ class kl_annealing():
         self.ratio = args.kl_anneal_ratio
         self.cycle = args.kl_anneal_cycle
         self.cyclical = args.kl_anneal_cyclical
-        self.args = args
         self.period = args.niter/args.kl_anneal_cycle
+        self.args = args
+     
         self.step = 1.0/(self.period*args.kl_anneal_ratio)
+        self.beta = args.beta
         
         
     
@@ -138,6 +140,7 @@ class kl_annealing():
                 self.v += self.step
                 self.iter += 1
             else:
+                self.iter+=1
                 self.args.beta = 1.0
             if self.iter >= self.period:
                 self.v = 0
@@ -152,7 +155,7 @@ class kl_annealing():
     
     def get_beta(self):
         # raise NotImplementedError
-        return self.args.beta
+        return self.beta
 
 
 def main():

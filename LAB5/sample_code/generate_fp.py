@@ -1,0 +1,219 @@
+import torch
+import argparse
+import os
+import random
+from torch.autograd import Variable
+from torch.utils.data import DataLoader
+import utils
+import numpy as np
+from dataset import bair_robot_pushing_dataset
+from tqdm import tqdm
+parser = argparse.ArgumentParser()
+parser.add_argument('--batch_size', default=12, type=int, help='batch size')
+parser.add_argument('--data_root', default='data/processed_data', help='root directory for data')
+parser.add_argument('--model_path', default='', help='path to model')
+parser.add_argument('--log_dir', default='', help='directory to save generations to')
+parser.add_argument('--seed', default=1, type=int, help='manual seed')
+parser.add_argument('--n_past', type=int, default=2, help='number of frames to condition on')
+parser.add_argument('--n_future', type=int, default=10, help='number of frames to predict')
+parser.add_argument('--num_threads', type=int, default=0, help='number of data loading threads')
+parser.add_argument('--nsample', type=int, default=5, help='number of samples')
+# parser.add_argument('--N', type=int, default=256, help='number of samples')
+
+
+args = parser.parse_args()
+os.makedirs('%s' % args.log_dir, exist_ok=True)
+
+
+args.n_eval = args.n_past+args.n_future
+args.max_step = args.n_eval
+
+print("Random Seed: ", args.seed)
+random.seed(args.seed)
+torch.manual_seed(args.seed)
+torch.cuda.manual_seed_all(args.seed)
+dtype = torch.cuda.FloatTensor
+
+
+
+# ---------------- load the models  ----------------
+module = torch.load(args.model_path)
+frame_predictor = module['frame_predictor']
+posterior = module['posterior']
+frame_predictor.eval()
+posterior.eval()
+encoder = module['encoder']
+decoder = module['decoder']
+encoder.eval()
+decoder.eval()
+frame_predictor.batch_size = args.batch_size
+posterior.batch_size = args.batch_size
+args.g_dim = module['args'].g_dim
+args.z_dim = module['args'].z_dim
+
+
+# --------- transfer to gpu ------------------------------------
+frame_predictor.cuda()
+posterior.cuda()
+encoder.cuda()
+decoder.cuda()
+
+# ---------------- set the argsions ----------------
+args.last_frame_skip = module['args'].last_frame_skip
+
+print(args)
+
+
+# --------- load a dataset ------------------------------------
+test_data = bair_robot_pushing_dataset(args, 'test')
+test_loader = DataLoader(test_data,
+                         num_workers=args.num_threads,
+                         batch_size=args.batch_size,
+                         shuffle=True,
+                         drop_last=True,
+                         pin_memory=True)
+
+
+# --------- eval funtions ------------------------------------
+
+def make_gifs(x, cond, idx, name):
+    # get approx posterior sample
+    frame_predictor.hidden = frame_predictor.init_hidden()
+    posterior.hidden = posterior.init_hidden()
+    posterior_gen = []
+    posterior_gen.append(x[0])
+    x_in = x[0]
+    for i in range(1, args.n_eval):
+        h= encoder(x_in)
+        h_target = encoder(x[i])[0].detach()
+        if i < args.n_past:	
+            h,skip = h
+            # z_t,_,_ = posterior(h_target)
+            # h_pred = frame_predictor(torch.cat([cond[i-1],h,z_t],1)).detach()
+            # posterior_gen.append(x[i])
+        else:
+            h, skip = h
+        h = h.detach()
+        z_t,_,  _= posterior(h_target) # take the mean
+        if i < args.n_past:
+            frame_predictor(torch.cat([cond[i - 1],h, z_t], 1)) 
+            posterior_gen.append(x[i])
+            x_in = x[i]
+        else:
+            h_pred = frame_predictor(torch.cat([cond[i - 1],h, z_t], 1)).detach()
+            x_in = decoder([h_pred, skip]).detach()
+            posterior_gen.append(x_in)
+  
+
+    nsample = args.nsample
+    ssim = np.zeros((args.batch_size, nsample, args.n_future))
+    psnr = np.zeros((args.batch_size, nsample, args.n_future))
+    all_gen = []
+    for s in range(nsample):
+        gen_seq = []
+        gt_seq = []
+        frame_predictor.hidden = frame_predictor.init_hidden()
+        posterior.hidden = posterior.init_hidden()
+        # x_in = x[0]
+        all_gen.append([])
+        all_gen[s].append(x[0])
+        for i in range(1, args.n_eval):
+
+            if i<args.n_past:
+                h,skip = encoder(x[i-1])
+                h = h.detach()
+                h_target,_ = encoder(x[i])
+                z_t,_,_ = posterior(h_target)
+                frame_predictor(torch.cat([cond[i-1],h,z_t],1)).detach()
+                all_gen[s].append(x[i])
+                x_pred = x[i]
+            else:
+                h,skip = encoder(x_pred)
+                z_t = torch.randn_like(z_t).to(device, dtype=torch.float32)
+                h_pred = frame_predictor(torch.cat([cond[i-1],h,z_t],1)).detach()
+                # z_pred, _, _ = modules['posterior'](h_pred)
+                x_pred = decoder([h_pred,skip]).detach()
+                gen_seq.append(x_pred)
+                gt_seq.append(x[i])
+                all_gen[s].append(x_pred)
+
+            
+            # h, skip = encoder(x[i-1])
+            # h = h.detach()
+            # if i < args.n_past:
+            #     h_target = encoder(x[i])[0].detach()
+            #     z_t,_, _ = posterior(h_target)
+            # else:
+            #     z_t = torch.randn_like(z_t).to(device, dtype=torch.float32)
+            # if i < args.n_past:
+            #     # h_target = encoder(x[i])[0].detach()
+            #     # z_t, _, _ = posterior(h_target)
+            #     frame_predictor(torch.cat([cond[i - 1],h, z_t], 1))
+            #     x_in = x[i]
+            #     all_gen[s].append(x_in)
+            # else:
+            #     z_t = torch.randn_like(z_t).to('cuda', dtype=torch.float32)
+            #     h = frame_predictor(torch.cat([ cond[i - 1],h, z_t], 1)).detach()
+            #     x_in = decoder([h, skip]).detach()
+            #     gen_seq.append(x_in)
+            #     gt_seq.append(x[i])
+            #     all_gen[s].append(x_in)
+        _, ssim[:, s, :], psnr[:, s, :] = utils.finn_eval_seq(gt_seq, gen_seq)
+
+
+    ###### ssim ######
+    for i in tqdm(range(args.batch_size)):
+        gifs = [ [] for t in range(args.n_eval) ]
+        text = [ [] for t in range(args.n_eval) ]
+        mean_psnr = np.mean(psnr[i], 1)
+        ordered = np.argsort(mean_psnr)
+        rand_sidx = [np.random.randint(nsample) for s in range(3)]
+        for t in range(args.n_eval):
+            # gt 
+            gifs[t].append(add_border(x[t][i], 'green'))
+            text[t].append('Ground\ntruth')
+            #posterior 
+            if t < args.n_past:
+                color = 'green'
+            else:
+                color = 'red'
+            gifs[t].append(add_border(posterior_gen[t][i], color))
+            text[t].append('Approx.\nposterior')
+            # best 
+            if t < args.n_past:
+                color = 'green'
+            else:
+                color = 'red'
+            sidx = ordered[-1]
+            gifs[t].append(add_border(all_gen[sidx][t][i], color))
+            text[t].append('Best PSNR\n' + str(mean_psnr[sidx]) )
+            # random 3
+            for s in range(len(rand_sidx)):
+                gifs[t].append(add_border(all_gen[rand_sidx[s]][t][i], color))
+                text[t].append('Random\nsample %d' % (s+1))
+
+        fname = '%s/gif/%s_%d.gif' % (args.log_dir, name, idx*args.batch_size + i) 
+        utils.save_gif_with_text(fname, gifs, text)
+    print(np.mean(psnr))
+
+def add_border(x, color, pad=1):
+    w = x.size()[1]
+    nc = x.size()[0]
+    px = Variable(torch.zeros(3, w+2*pad+30, w+2*pad))
+    if color == 'red':
+        px[0] =0.7 
+    elif color == 'green':
+        px[1] = 0.7
+    if nc == 1:
+        for c in range(3):
+            px[c, pad:w+pad, pad:w+pad] = x
+    else:
+        px[:, pad:w+pad, pad:w+pad] = x
+    return px
+device = 'cuda'
+os.makedirs(args.log_dir+'/gif', exist_ok=True)
+for i ,data in (enumerate(test_loader)):
+    x, cond = data
+    x = torch.transpose(x, 0, 1).to(device, dtype=torch.float32)
+    cond = torch.transpose(cond, 0, 1).to(device, dtype=torch.float32)
+    make_gifs(x, cond, i, 'test')

@@ -126,13 +126,16 @@ def pred(seq, cond, modules, args, device):
     for i in range(1, args.n_eval):
         # print(seq.shape)
         # print(cond.shape)
-        h,skip = modules['encoder'](seq[i-1])
+        
         if i < args.n_past:
+            h,skip = modules['encoder'](seq[i-1])
             h_target = modules['encoder'](seq[i])
             z_t, _, _ = modules['posterior'](h_target[0])
-            h_pred = modules['frame_predictor'](torch.cat([cond[i-1],h,z_t],1))
+            h_pred = modules['frame_predictor'](torch.cat([cond[i-1],h,z_t],1)).detach()
             pred_seq.append(seq[i])
+            x_pred = seq[i]
         else:
+            h,skip = modules['encoder'](x_pred)
             z_t = torch.randn_like(z_t).to(device, dtype=torch.float32)
             h_pred = modules['frame_predictor'](torch.cat([cond[i-1],h,z_t],1)).detach()
             # z_pred, _, _ = modules['posterior'](h_pred)
@@ -222,3 +225,20 @@ def is_sequence(arg):
             not hasattr(arg, "dot") and
             (hasattr(arg, "__getitem__") or
             hasattr(arg, "__iter__")))
+
+def draw_text_tensor(tensor, text):
+    np_x = tensor.transpose(0, 1).transpose(1, 2).data.cpu().numpy()
+    pil = Image.fromarray(np.uint8(np_x*255))
+    draw = ImageDraw.Draw(pil)
+    draw.text((4, 64), text, (0,0,0))
+    img = np.asarray(pil)
+    return Variable(torch.Tensor(img / 255.)).transpose(1, 2).transpose(0, 1)
+
+def save_gif_with_text(filename, inputs, text, duration=0.25):
+    images = []
+    for tensor, text in zip(inputs, text):
+        img = image_tensor([draw_text_tensor(ti, texti) for ti, texti in zip(tensor, text)], padding=0)
+        img = img.cpu()
+        img = ((img.transpose(0,1).transpose(1,2).clamp(0,1).numpy()) * 255).astype(np.uint8)
+        images.append(img)
+    imageio.mimsave(filename, images, duration=duration)

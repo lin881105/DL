@@ -18,7 +18,7 @@ parser.add_argument('--n_past', type=int, default=2, help='number of frames to c
 parser.add_argument('--n_future', type=int, default=10, help='number of frames to predict')
 parser.add_argument('--num_threads', type=int, default=0, help='number of data loading threads')
 parser.add_argument('--nsample', type=int, default=5, help='number of samples')
-# parser.add_argument('--N', type=int, default=256, help='number of samples')
+parser.add_argument('--N', type=int, default=256, help='number of samples')
 
 
 args = parser.parse_args()
@@ -84,23 +84,20 @@ def make_gifs(x, cond, idx, name):
     posterior_gen.append(x[0])
     x_in = x[0]
     for i in range(1, args.n_eval):
-        h= encoder(x_in)
+        h = encoder(x_in)
         h_target = encoder(x[i])[0].detach()
-        if i < args.n_past:	
-            h,skip = h
-            # z_t,_,_ = posterior(h_target)
-            # h_pred = frame_predictor(torch.cat([cond[i-1],h,z_t],1)).detach()
-            # posterior_gen.append(x[i])
-        else:
+        if args.last_frame_skip or i < args.n_past:	
             h, skip = h
+        else:
+            h, _ = h
         h = h.detach()
-        z_t,_,  _= posterior(h_target) # take the mean
+        _, z_t, _= posterior(h_target) # take the mean
         if i < args.n_past:
-            frame_predictor(torch.cat([cond[i - 1],h, z_t], 1)) 
+            frame_predictor(torch.cat([h, z_t, cond[i - 1]], 1)) 
             posterior_gen.append(x[i])
             x_in = x[i]
         else:
-            h_pred = frame_predictor(torch.cat([cond[i - 1],h, z_t], 1)).detach()
+            h_pred = frame_predictor(torch.cat([h, z_t, cond[i - 1]], 1)).detach()
             x_in = decoder([h_pred, skip]).detach()
             posterior_gen.append(x_in)
   
@@ -114,52 +111,30 @@ def make_gifs(x, cond, idx, name):
         gt_seq = []
         frame_predictor.hidden = frame_predictor.init_hidden()
         posterior.hidden = posterior.init_hidden()
-        # x_in = x[0]
+        x_in = x[0]
         all_gen.append([])
-        all_gen[s].append(x[0])
+        all_gen[s].append(x_in)
         for i in range(1, args.n_eval):
-
-            if i<args.n_past:
-                h,skip = encoder(x[i-1])
-                h = h.detach()
-                h_target,_ = encoder(x[i])
-                z_t,_,_ = posterior(h_target)
-                frame_predictor(torch.cat([cond[i-1],h,z_t],1)).detach()
-                all_gen[s].append(x[i])
-                x_pred = x[i]
+            h = encoder(x_in)
+            if args.last_frame_skip or i < args.n_past:	
+                h, skip = h
             else:
-                h,skip = encoder(x_pred)
-                z_t = torch.randn_like(z_t).to(device, dtype=torch.float32)
-                h_pred = frame_predictor(torch.cat([cond[i-1],h,z_t],1)).detach()
-                # z_pred, _, _ = modules['posterior'](h_pred)
-                x_pred = decoder([h_pred,skip]).detach()
-                gen_seq.append(x_pred)
+                h, _ = h
+            h = h.detach()
+            if i < args.n_past:
+                h_target = encoder(x[i])[0].detach()
+                z_t, _, _ = posterior(h_target)
+                frame_predictor(torch.cat([h, z_t, cond[i - 1]], 1))
+                x_in = x[i]
+                all_gen[s].append(x_in)
+            else:
+                z_t = torch.randn_like(z_t).to('cuda', dtype=torch.float32)
+                h = frame_predictor(torch.cat([h, z_t, cond[i - 1]], 1)).detach()
+                x_in = decoder([h, skip]).detach()
+                gen_seq.append(x_in)
                 gt_seq.append(x[i])
-                all_gen[s].append(x_pred)
-
-            
-            # h, skip = encoder(x[i-1])
-            # h = h.detach()
-            # if i < args.n_past:
-            #     h_target = encoder(x[i])[0].detach()
-            #     z_t,_, _ = posterior(h_target)
-            # else:
-            #     z_t = torch.randn_like(z_t).to(device, dtype=torch.float32)
-            # if i < args.n_past:
-            #     # h_target = encoder(x[i])[0].detach()
-            #     # z_t, _, _ = posterior(h_target)
-            #     frame_predictor(torch.cat([cond[i - 1],h, z_t], 1))
-            #     x_in = x[i]
-            #     all_gen[s].append(x_in)
-            # else:
-            #     z_t = torch.randn_like(z_t).to('cuda', dtype=torch.float32)
-            #     h = frame_predictor(torch.cat([ cond[i - 1],h, z_t], 1)).detach()
-            #     x_in = decoder([h, skip]).detach()
-            #     gen_seq.append(x_in)
-            #     gt_seq.append(x[i])
-            #     all_gen[s].append(x_in)
+                all_gen[s].append(x_in)
         _, ssim[:, s, :], psnr[:, s, :] = utils.finn_eval_seq(gt_seq, gen_seq)
-
 
     ###### ssim ######
     for i in tqdm(range(args.batch_size)):
@@ -194,7 +169,8 @@ def make_gifs(x, cond, idx, name):
 
         fname = '%s/gif/%s_%d.gif' % (args.log_dir, name, idx*args.batch_size + i) 
         utils.save_gif_with_text(fname, gifs, text)
-    print(np.mean(psnr))
+    
+    return np.mean(psnr)
 
 def add_border(x, color, pad=1):
     w = x.size()[1]
@@ -212,8 +188,10 @@ def add_border(x, color, pad=1):
     return px
 device = 'cuda'
 os.makedirs(args.log_dir+'/gif', exist_ok=True)
+psnr = []
 for i ,data in (enumerate(test_loader)):
     x, cond = data
     x = torch.transpose(x, 0, 1).to(device, dtype=torch.float32)
     cond = torch.transpose(cond, 0, 1).to(device, dtype=torch.float32)
-    make_gifs(x, cond, i, 'test')
+    psnr.append(make_gifs(x, cond, i, 'test'))
+print(np.mean(psnr))

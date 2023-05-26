@@ -15,3 +15,5 @@ LAB4/new_train
 *.png
 *.csv
 *.pth
+final_project/data
+*.gif

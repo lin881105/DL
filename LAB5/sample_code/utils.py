@@ -115,37 +115,37 @@ def init_weights(m):
         m.weight.data.normal_(1.0, 0.02)
         m.bias.data.fill_(0)
 
-def pred(seq, cond, modules, args, device):
+def pred(x, cond, modules, args, device):
     modules['frame_predictor'].hidden = modules['frame_predictor'].init_hidden()
     modules['posterior'].hidden = modules['posterior'].init_hidden()
-    seq = seq.to(device)
-    cond = cond.to(device)
-
-    pred_seq = []
-    pred_seq.append(seq[0])
-    for i in range(1, args.n_eval):
-        # print(seq.shape)
-        # print(cond.shape)
-        
-        if i < args.n_past:
-            h,skip = modules['encoder'](seq[i-1])
-            h_target = modules['encoder'](seq[i])
-            z_t, _, _ = modules['posterior'](h_target[0])
-            h_pred = modules['frame_predictor'](torch.cat([cond[i-1],h,z_t],1)).detach()
-            pred_seq.append(seq[i])
-            x_pred = seq[i]
+    gen_seq = []
+    gen_seq.append(x[0])
+    x_in = x[0]
+    for i in range(1, args.n_past+args.n_future):
+        h = modules['encoder'](x_in)
+        if args.last_frame_skip or i < args.n_past:	
+            h, skip = h
         else:
-            h,skip = modules['encoder'](x_pred)
+            h, _ = h
+        h = h.detach()
+        if i < args.n_past:
+            h_target = modules['encoder'](x[i])[0].detach()
+            z_t, mu, logvar = modules['posterior'](h_target)
+            x_in = x[i]
+            modules['frame_predictor'](torch.cat([h, z_t, cond[i - 1]], 1)) 
+            gen_seq.append(x[i])
+        else:
             z_t = torch.randn_like(z_t).to(device, dtype=torch.float32)
-            h_pred = modules['frame_predictor'](torch.cat([cond[i-1],h,z_t],1)).detach()
-            # z_pred, _, _ = modules['posterior'](h_pred)
-            x_pred = modules['decoder']([h_pred,skip]).detach()
-            pred_seq.append(x_pred)
-    return torch.stack(pred_seq, dim=0)
+            h_pred = modules['frame_predictor'](torch.cat([h, z_t, cond[i - 1]], 1)).detach()
+            x_pred = modules['decoder']([h_pred, skip]).detach()
+            x_in = x_pred
+            gen_seq.append(x_pred)
+    
+    return gen_seq
 
 
 def plot_pred(seq, cond, modules, epoch, args):
-    pred_seq = pred(seq.transpose(0,1), cond.transpose(0,1), modules, args, 'cuda')
+    pred_seq = pred(seq, cond, modules, args, 'cuda')
     # print(seq.shape)
     # print(pred_seq.shape)    
     # seq = seq.detach().cpu().numpy().transpose(0, 2, 3, 1)

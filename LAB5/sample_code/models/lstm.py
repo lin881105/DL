@@ -61,7 +61,7 @@ class gaussian_lstm(nn.Module):
         # raise NotImplementedError
         std = torch.exp(0.5*logvar)
         eps = torch.randn_like(std).to(self.device)
-        return mu+eps+std
+        return mu+eps*std
 
     def forward(self, input):
         embedded = self.embed(input)

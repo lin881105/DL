@@ -66,38 +66,22 @@ def train(x, cond, modules, optimizer, kl_anneal, args):
     modules['posterior'].hidden = modules['posterior'].init_hidden()
     mse = 0
     kld = 0
+    h_seq = [modules['encoder'](x[i]) for i in range(args.n_past+args.n_future)]
     use_teacher_forcing = True if random.random() < args.tfr else False
+
     for i in range(1, args.n_past + args.n_future):
-
-        # encode current frame
-        # print(x.shape)
-        # print(cond.shape)
-        h,skip = modules["encoder"](x[i-1])
-
-        if i < args.n_past:
-            h_target,_ = modules['encoder'](x[i])
-            z_t,mu,logvar = modules['posterior'](h_target)
-
-            h_pred = modules['frame_predictor'](torch.cat([cond[i-1],h,z_t],1))
+        h_target, _ = h_seq[i]
+        if args.last_frame_skip or i < args.n_past:	
+            h, skip = h_seq[i-1]
         else:
-            if use_teacher_forcing:
-                h_target,_ = modules['encoder'](x[i])
-                z_t,mu,logvar = modules['posterior'](h_target)
-                h_pred = modules['frame_predictor'](torch.cat([cond[i-1],h,z_t],1))
-            else:
-                h_target,_ = modules["encoder"](x_pred)
-                z_t,mu,logvar = modules['posterior'](h_target)
-                h_pred = modules['frame_predictor'](torch.cat([cond[i-1],h,z_t],1))
-        
-        # compute decoder output
-        x_pred = modules['decoder']([h_pred,skip])
-        
-
-        # reconstruction loss
-        mse += F.mse_loss(x_pred,x[i])
-
-        # KL loss
-        kld += kl_criterion(mu,logvar,args)
+            h, _ = h_seq[i-1]
+        z_t, mu, logvar = modules['posterior'](h_target)
+        h_pred = modules['frame_predictor'](torch.cat([h, z_t, cond[i - 1]], 1))
+        x_pred = modules['decoder']([h_pred, skip])
+        mse += F.mse_loss(x_pred, x[i])
+        kld += kl_criterion(mu, logvar, args)
+        if not use_teacher_forcing:
+            h_seq[i] = modules['encoder'](x_pred)
             
 
 
@@ -109,7 +93,7 @@ def train(x, cond, modules, optimizer, kl_anneal, args):
 
     optimizer.step()
 
-    return loss.detach().cpu().numpy() / (args.n_past + args.n_future), mse.detach().cpu().numpy() / (args.n_past + args.n_future), kld.detach().cpu().numpy() / (args.n_future + args.n_past),beta
+    return loss.detach().cpu().numpy() / (args.n_past + args.n_future), mse.detach().cpu().numpy() / (args.n_past + args.n_future), kld.detach().cpu().numpy() / (args.n_future + args.n_past)
 
 class kl_annealing():
     def __init__(self, args):
@@ -124,7 +108,6 @@ class kl_annealing():
         self.args = args
      
         self.step = 1.0/(self.period*args.kl_anneal_ratio)
-        self.beta = args.beta
         
         
     
@@ -155,7 +138,7 @@ class kl_annealing():
     
     def get_beta(self):
         # raise NotImplementedError
-        return self.beta
+        return self.args.beta
 
 
 def main():
@@ -242,6 +225,8 @@ def main():
                             drop_last=True,
                             pin_memory=True)
     train_iterator = iter(train_loader)
+    
+    args.epoch_size = len(train_loader)//args.batch_size
 
     validate_loader = DataLoader(validate_data,
                             num_workers=args.num_workers,
@@ -273,7 +258,7 @@ def main():
         'decoder': decoder,
     }
     # --------- training loop ------------------------------------
-
+    args.epoch_size = len(train_data)//args.batch_size
     progress = tqdm(total=args.niter)
     best_val_psnr = 0
     for epoch in range(start_epoch, start_epoch + niter):
@@ -292,8 +277,10 @@ def main():
             except StopIteration:
                 train_iterator = iter(train_loader)
                 seq, cond = next(train_iterator)
+            seq = torch.transpose(seq,0,1).to(device)
+            cond = torch.transpose(cond,0,1).to(device)
             
-            loss, mse, kld,beta = train(seq.transpose(0,1).to(device), cond.transpose(0,1).to(device), modules, optimizer, kl_anneal, args)
+            loss, mse, kld = train(seq, cond, modules, optimizer, kl_anneal, args)
             epoch_loss += loss
             epoch_mse += mse
             epoch_kld += kld
@@ -323,11 +310,14 @@ def main():
                 except StopIteration:
                     validate_iterator = iter(validate_loader)
                     validate_seq, validate_cond = next(validate_iterator)
+                    
+                validate_seq = torch.transpose(validate_seq,0,1).to(device,dtype=torch.float32)
+                validate_cond = torch.transpose(validate_cond,0,1).to(device,dtype=torch.float32)
 
-                pred_seq = pred(validate_seq.transpose(0,1), validate_cond.transpose(0,1), modules, args, device)
+                pred_seq = pred(validate_seq, validate_cond, modules, args, device)
                 # print(pred_seq.shape)
                 # print(validate_seq.shape)
-                _, _, psnr = finn_eval_seq(validate_seq.transpose(0,1)[args.n_past:args.n_past+args.n_future], pred_seq[args.n_past:])
+                _, _, psnr = finn_eval_seq(validate_seq[args.n_past:args.n_past+args.n_future], pred_seq[args.n_past:])
                 psnr_list.append(psnr)
                 
             ave_psnr = np.mean(np.concatenate(psnr))
@@ -354,6 +344,8 @@ def main():
             except StopIteration:
                 validate_iterator = iter(validate_loader)
                 validate_seq, validate_cond = next(validate_iterator)
+            validate_seq = torch.transpose(validate_seq,0,1).to(device,dtype=torch.float32)
+            validate_cond = torch.transpose(validate_cond,0,1).to(device,dtype=torch.float32)
 
             plot_pred(validate_seq, validate_cond, modules, epoch, args)
 
